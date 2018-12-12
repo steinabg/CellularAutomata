@@ -1,12 +1,36 @@
 import numpy as np
 
 
-def T2calc_change_qcj(pt, Dj, q_cbj, Ej, gamma, q_th):
+
+def rescale_Dj_E_j(Dj,dt,porosity,q_th,q_cj,p_adh,q_cbj,Ej,q_d):
+    '''
+
+    :param Dj: Deposition rate
+    :param dt: Time step
+    :param porosity: porosity. Constant.
+    :param q_th: Turbidity current thickness
+    :param q_cj: jth current sediment volume concentration in all cells
+    :param p_adh: Unmovable amount of turbidity current
+    :param q_cbj: jth sediment sea bed fraction
+    :param Ej: Erosion rate
+    :param q_d: Soft sediment thickness in sea bed
+    :return: Rescaled deposition and erosion rate
+    '''
+    Dj = np.where(Dj*dt/(1-porosity) <= q_th[:,:,None]*q_cj-p_adh, Dj, (q_th[:,:,None]*q_cj-p_adh)*(1-porosity)/dt)
+    Dj[Dj<0] = 0
+
+    leftover = 0
+    Ej = np.where(q_cbj*Ej*dt/(1-porosity) <= q_d[:,:,None]*q_cbj, Ej, ((q_d-leftover)*(1-porosity)/dt)[:,:,None])
+    Ej[Ej<0] = 0 # Should not be necessary
+    Ej[np.isinf(Ej)]=0
+    return Dj, Ej
+
+def T2calc_change_qcj(pt, Dj, q_cbj, Ej, gamma, q_th, q_cj):
     '''
     This function calculates formula (49)
     :param pt: Time step of CA
     :param Dj: Deposition rate
-    :param q_cbj: jth sediment sea bed density
+    :param q_cbj: jth sediment sea bed fraction
     :param Ej: Erosion rate
     :param gamma: Porosity
     :param q_th: Turbidity current thickness
@@ -16,30 +40,36 @@ def T2calc_change_qcj(pt, Dj, q_cbj, Ej, gamma, q_th):
     factor = pt/(1-gamma)
     with np.errstate(divide='ignore', invalid='ignore'):
         res = np.nan_to_num(factor * diff / q_th[:, :, np.newaxis])[1:-1, 1:-1, :]
-
+    # res = np.minimum(res, q_cj[1:-1,1:-1,:])
     return res
 
-def T2_calc_change_qCBJ(pt, Dj, q_cbj, Ej, gamma, q_d):
+def T2_calc_change_qCBJ(pt, Dj, q_cbj, Ej, gamma, q_d, q_th, q_cj):
     '''
 
     :param pt: Time step of CA
     :param Dj: Deposition rate
-    :param q_cbj: jth sediment sea bed density
+    :param q_cbj: jth sediment sea bed fraction
     :param Ej: Erosion rate
     :param gamma: Porosity
     :param q_d: Soft sediment thickness
     :return: The change in the jth bed sediment concentration
     '''
 
+    diff =(Dj - q_cbj * Ej)
     factor = pt / (1 - gamma)
-    res1 = np.nan_to_num(factor * np.sum(Dj - q_cbj * Ej, axis=2))
+    var = factor * diff
+    # var = np.minimum(var, q_th[:,:,None]*q_cj)
+    A = factor * diff/q_d[:,:,None]
+    # A = np.minimum(A, q_th[:,:,None]*q_cj) / q_d[:,:,None]
 
-    firstDiff = (factor / q_d)[:, :, np.newaxis] * (Dj - q_cbj * Ej)
+    B = q_cbj/q_d[:,:,None] * np.nan_to_num(np.sum(var,axis=2))[:,:,None]
 
-    secondDiff = (res1 / q_d)[:, :, np.newaxis] * q_cbj
-    return np.nan_to_num(firstDiff - secondDiff)[1:-1, 1:-1, :]
 
-def T2_calc_change_qd(pt, Dj, q_cbj, Ej, gamma):
+
+    return np.nan_to_num(A - B)[1:-1, 1:-1, :]
+
+
+def T2_calc_change_qd(pt, Dj, q_cbj, Ej, gamma, q_th, q_cj):
     '''
 
     :param pt: Time step of CA
@@ -50,7 +80,8 @@ def T2_calc_change_qd(pt, Dj, q_cbj, Ej, gamma):
     :return: The change in soft sediment thickness
     '''
     factor = pt / (1 - gamma)
-    var = factor * np.sum(Dj - q_cbj * Ej, axis=2)
+    var = factor * np.sum((Dj - q_cbj * Ej),axis=2)
+    # var = np.minimum(var, q_th[:,:,None]*q_cj)
     return np.nan_to_num(var)[1:-1,1:-1]
 
 
@@ -83,8 +114,10 @@ def calc_Z_mj(kappa, Ustar, v_sj, f):
     :return: jth value of Z as specified by eq. (38)
 
     '''
-    return kappa * (np.sqrt(Ustar ** 2)[:, :, np.newaxis]) * v_sj * f
+    # res = kappa * (np.sqrt(Ustar ** 2)[:, :, np.newaxis]) * v_sj * f # version used in geomorph
 
+    res = kappa * (np.sqrt(Ustar ** 2)[:, :, np.newaxis]) * f/v_sj  # version used in Salles Thesis & Imran et al
+    return res
 
 def calc_kappa(D_s):  # TODO! SJEKK!
     '''
@@ -186,7 +219,7 @@ def calc_nearBedConcentration_SusSed(D_sj, D_sg, q_cj):
     return res
 
 
-def calc_averageSedimentSize(q_cj, D_sj):
+def calc_averageSedimentSize(q_cj: np.ndarray, D_sj: np.ndarray):
     '''
     :param q_cj: jth sediment volume concentration
     :type q_cj: numpy.ndarray(Ny,Nx,Nj)
@@ -197,7 +230,14 @@ def calc_averageSedimentSize(q_cj, D_sj):
     :rtype: numpy.ndarray(Ny,Nx)
     :return: Geometric mean size of suspended sediment mixture in cell
     '''
-    return np.sum(q_cj * D_sj, axis=2)
+    # mean =  np.sum(q_cj * D_sj, axis=2) # Arithmetic mean
+    scale = np.sum(q_cj, axis=2)
+    # scale = 1
+    len = D_sj.shape
+
+    mean = np.nan_to_num(np.prod(q_cj*D_sj,axis=2)/scale)**(1/len[0]) # geometric mean
+
+    return mean
 
 
 def calc_depositionRate(v_sj, c_nbj):
@@ -237,8 +277,23 @@ def calc_dimless_sphere_settlingVel(v_sj, g_reduced, nu):
     :rtype: numpy.ndarray(Nj)
 
     '''
-    return v_sj * np.cbrt(1 / (g_reduced * nu))
+    res =  v_sj * np.cbrt(1 / (g_reduced * nu))
 
+    return res
+
+def calc_sphere_settlingVel(rho_j,rho_a,g,d,nu):
+    '''
+
+    :param rho_j: Sediment density
+    :param rho_a: Ambient fluid density
+    :param g: gravitational acceleration
+    :param d: Sediment diameter
+    :param nu: Ambient fluid kinematic viscosity
+    :return: Sphere settling velocity of particle j
+    '''
+
+    res = 1/18*(rho_j/rho_a-1)*g*(d**2)/nu
+    return res
 
 def calc_g_reduced(rho_j, rho_a, g=9.81):
     '''

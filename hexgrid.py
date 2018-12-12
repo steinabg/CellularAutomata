@@ -20,21 +20,22 @@ class Hexgrid():
         self.a = 0.43  # Empirical coefficient (used in I_3)
         self.rho_a = 1000  # ambient density
         self.rho_j = np.array([2650])  # List of current sediment densities
-        self.D_sj = np.array([0.0011])  # List of sediment-particle diameters
+        self.D_sj = np.array([0.00011])  # List of sediment-particle diameters
         self.Nj = 1  # Number of sediment types
-        self.c_D = 0.003  # Bed drag coefficient (table 3)
-        self.v_sj = np.array([0.1])  # List of sediment-particle fall-velocities
+        self.c_D = np.sqrt(0.003)  # Bed drag coefficient (table 3)
         self.nu = 1.5182e-06  # Kinematic viscosity of water at 5 degrees celcius
         self.porosity = 0.3
+        self.v_sj = ma.calc_settling_speed(self.D_sj,self.rho_a,self.rho_j,self.g,self.nu)  # List of sediment-particle fall-velocities
 
         # Constants used in I_1:
         self.p_f = np.deg2rad(1)  # Height threshold friction angle
-        self.p_adh = 0.1
+        self.p_adh = 0
         ############## Input variables ###################
         self.Nx = Nx
         self.Ny = Ny
         self.dx = dx
         self.reposeAngle = reposeAngle
+        
 
         ################     Grid       ###################
         self.X = np.zeros((Ny, Nx, 2))  # X[:,:,0] = X coords, X[:,:,1] = Y coords
@@ -64,6 +65,11 @@ class Hexgrid():
         #         self.totalheight = self.Q_d + self.Q_a
 
         self.defineNeighbors()
+        
+        # FOR DEBUGGING
+        self.i = 0
+        self.Erosionrate =[]
+        self.Depositionrate=[]
 
         ################################################################
         ##########################  Methods ############################
@@ -97,28 +103,29 @@ class Hexgrid():
         #         print("dt = ", self.dt)
         # The order comes from the article
 
-        #         print("self.Q_th =\n", self.Q_th )
-        #         print("self.Q_v  =\n", self.Q_v  )
-        #         print("self.Q_cj =\n", self.Q_cj )
-        #         print("self.Q_cbj=\n", self.Q_cbj)
-        #         print("self.Q_d  =\n", self.Q_d  )
-        #         print("self.Q_a  =\n", self.Q_a  )
-        #         print("self.Q_o  =\n", self.Q_o  )
+        # self.printCA()
         self.T_1()  # Water entrainment.
-        self.T_2()  # Erosion and deposition
+        # print("Pre T_2 \n")
+        # self.printCA()
+        self.T_2()  # Erosion and deposition TODO fix
+        if((self.Q_cj>1).sum() > 0) & (self.i == 0):
+            print("self.Q_cj>1 after T_2")
+            self.i =1
         self.I_1()  # Turbidity c. outflows
+        if((self.Q_cj>1).sum() > 0) & (self.i == 0):
+            print("self.Q_cj>1 after I_1")
+            self.i =1
         self.I_2()  # Update thickness and concentration
+        if((self.Q_cj>1).sum() > 0) & (self.i == 0):
+            print("self.Q_cj>1 after I_2")
+            self.i =1
         self.I_3()  # Update of turbidity flow velocity
+        if((self.Q_cj>1).sum() > 0) & (self.i == 0):
+            print("self.Q_cj>1 after I_3")
+            self.i =1
         self.I_4()  # Toppling rule
-
-    #         print("After \n")
-    #         print("self.Q_th =\n", self.Q_th )
-    #         print("self.Q_v  =\n", self.Q_v  )
-    #         print("self.Q_cj =\n", self.Q_cj )
-    #         print("self.Q_cbj=\n", self.Q_cbj)
-    #         print("self.Q_d  =\n", self.Q_d  )
-    #         print("self.Q_a  =\n", self.Q_a  )
-    #         print("self.Q_o  =\n", self.Q_o  )
+        # print("Post T_2 \n")
+        # self.printCA()
 
     def T_1(self):  # Water entrainment. IN: Q_a,Q_th,Q_cj,Q_v. OUT: Q_vj,Q_th
         '''
@@ -170,22 +177,49 @@ class Hexgrid():
         kappa = T2.calc_kappa(self.D_sj)
         Ustar = T2.calc_Ustar(self.c_D, self.Q_v)
         g_reduced = T2.calc_g_reduced(self.rho_j, self.rho_a, g=self.g)
-        v_sjSTAR = T2.calc_dimless_sphere_settlingVel(self.v_sj, g_reduced, self.nu)
-        D_sg = T2.calc_averageSedimentSize(self.Q_cj, self.D_sj)  # Hør med veiledere. Enig?
+        # v_sjSTARold = T2.calc_dimless_sphere_settlingVel(self.v_sj, g_reduced, self.nu)
+        # v_sjSTAR = T2.calc_sphere_settlingVel(self.rho_j, self.rho_a, self.g, self.D_sj, self.nu)
+        v_sjSTAR = self.v_sj # Use this according to Salles' email
+        D_sg = T2.calc_averageSedimentSize(self.Q_cj, self.D_sj)
         c_nbj = T2.calc_nearBedConcentration_SusSed(self.D_sj, D_sg, self.Q_cj)
 
         D_j = np.nan_to_num(T2.calc_depositionRate(v_sjSTAR, c_nbj))
         Z_mj = T2.calc_Z_mj(kappa, Ustar, v_sjSTAR, f)
         E_j = T2.calc_erotionRate(Z_mj)
 
-        self.Q_a[1:-1,1:-1] += T2.T2_calc_change_qd(self.dt,D_j,self.Q_cbj,E_j,self.porosity)
-        self.Q_d[1:-1,1:-1] += T2.T2_calc_change_qd(self.dt,D_j,self.Q_cbj,E_j,self.porosity)
-        if(T2.T2calc_change_qcj(self.dt, D_j, self.Q_cbj, E_j, self.porosity, self.Q_th).sum() > 1e+03):
-            print("break")
-        self.Q_cj[1:-1,1:-1,:] += T2.T2calc_change_qcj(self.dt, D_j, self.Q_cbj, E_j, self.porosity, self.Q_th)
-        self.Q_cbj[1:-1,1:-1,:] += T2.T2_calc_change_qCBJ(self.dt, D_j, self.Q_cbj, E_j, self.porosity, self.Q_d)
+        # Use old values in equations!
+        oldQ_th = self.Q_th
+        oldQ_cj = self.Q_cj.copy()
+        oldQ_d = self.Q_d.copy()
 
-    def I_1(self):  # TODO I think the values are wrong => leads to negative q_th in I_2. try relaxation = 1?
+        #Rescale D_j and E_j to prevent too much material being moved
+        D_j, E_j = T2.rescale_Dj_E_j(D_j,self.dt,self.porosity,self.Q_th,self.Q_cj,self.p_adh,self.Q_cbj,E_j,self.Q_d)
+        
+        
+        # IF Q_cj = 1 increase the deposition rate D_j to compensate?
+#         temp_delta_qa = T2.T2_calc_change_qd(self.dt,D_j,self.Q_cbj,E_j,self.porosity, oldQ_th, oldQ_cj)
+        
+#         D_j = np.where(self.Q_cj>=0.85, D_j*100,D_j)
+        
+        
+        
+        
+        
+        #DEBUGGING!
+        self.Erosionrate.append(np.amax(E_j.flatten()))
+        self.Depositionrate.append(np.amax(D_j.flatten()))
+        #######
+
+        self.Q_a[1:-1,1:-1] += T2.T2_calc_change_qd(self.dt,D_j,self.Q_cbj,E_j,self.porosity, oldQ_th, oldQ_cj)
+        self.Q_d[1:-1,1:-1] += T2.T2_calc_change_qd(self.dt,D_j,self.Q_cbj,E_j,self.porosity, oldQ_th, oldQ_cj)
+        self.Q_cj[1:-1,1:-1,:] -= T2.T2calc_change_qcj(self.dt, D_j, self.Q_cbj, E_j, self.porosity, oldQ_th, oldQ_cj)
+        self.Q_cbj[1:-1,1:-1,:] += T2.T2_calc_change_qCBJ(self.dt, D_j, self.Q_cbj, E_j, self.porosity, oldQ_d, oldQ_th, oldQ_cj)
+
+        # Fail-safe
+        self.Q_cbj[self.Q_cbj>1] = 1 # TODO Testing
+        # self.Q_th[np.sum(self.Q_cj,axis=2) == 0] = 0 # Cant have thickness if no concentration...
+
+    def I_1(self): # TODO Tror det er feil her!!
         '''
         This function calculates the turbidity current outflows.\
         IN: Q_a,Q_th,Q_v,Q_cj. OUT: Q_o
@@ -260,15 +294,16 @@ class Hexgrid():
             normalization = self.Q_th / r  # nu_nf
         #         print("normalization=\n", normalization)
         with np.errstate(invalid='ignore'):
-            relaxation = 1
-            # relaxation = np.sqrt(2 * r * g_prime / (0.5 * self.dx)) * self.dt
-        #         print("relaxation=\n", relaxation)
-        #         print("(normalization*relaxation)[1:-1,1:-1].shape=", (normalization*relaxation)[1:-1,1:-1].shape)
-        #         print('nonNormalizedOutFlow.shape=\n', nonNormalizedOutFlow.shape)
+            relaxation = np.sqrt(2 * r * g_prime) * self.dt/(0.5 * self.dx)
+        if(relaxation.any() > 1):
+            print("Warning! Relaxation > 1!")
 
         for i in range(6):
             self.Q_o[1:-1, 1:-1, i] = np.nan_to_num(
                 (normalization * relaxation)[1:-1, 1:-1] * nonNormalizedOutFlow[:, :, i])
+            
+        if((np.sum(self.Q_o, axis=2) > self.Q_th).sum() > 0):
+            print("more outflow than thickness!")
 
     def I_2(self):
         '''Update thickness and concentration. IN: Q_th,Q_cj,Q_o. OUT: Q_th,Q_cj'''
@@ -282,9 +317,10 @@ class Hexgrid():
         for i in range(6):
             inn = (self.Q_o[self.NEIGHBOR[i] + (outflowNo[i],)])
             out = self.Q_o[1:-1, 1:-1, i]
-            s += inn - out
+            s += (inn - out)
+        eps = 1e-13
         newq_th = self.Q_th[1:-1, 1:-1] + np.nan_to_num(s)
-
+        newq_th[newq_th<eps] = 0
         term1 = ((self.Q_th - np.sum(self.Q_o, axis=2))[:, :, np.newaxis] * self.Q_cj)[1:-1, 1:-1, :]
         #         print("[q_th-sum(q_o(0,i),i)]*q_cj(0)=",((self.Q_th-np.sum(self.Q_o,axis=2))[:,:,np.newaxis]*self.Q_cj)[1:-1,1:-1,:])
         #         print("term1.shape=",term1.shape)
@@ -293,6 +329,7 @@ class Hexgrid():
                 term2[:, :, j] += self.Q_o[self.NEIGHBOR[i] + (outflowNo[i],)] * self.Q_cj[self.NEIGHBOR[i] + (j,)]
         #         print("term2.shape=",term2.shape)
         newq_cj = (term1 + term2) / newq_th[:, :, np.newaxis]
+        newq_cj[np.isinf(newq_cj)] = 0
         #         print("newq_th.shape=",newq_th.shape)
         #         print("newq_cj.shape=",newq_cj.shape)
 
@@ -332,7 +369,7 @@ class Hexgrid():
             sum1 = self.Q_a + self.Q_th
             diff[:, :, i] = (sum1)[1:-1, 1:-1] - (sum1)[self.NEIGHBOR[i]]
         diff[np.isinf(diff)]=0 # For borders. diff = 0 => U_k = 0. ok.
-
+        # diff[diff<0] = 0 # To avoid negative values in np.sqrt()
         t1 = np.zeros((6,self.Ny - 2, self.Nx - 2))
         for i in range(6):
             t1[i,:,:] = diff[:,:,i]
@@ -398,20 +435,17 @@ class Hexgrid():
         deltaSSum += np.roll(np.roll(deltaS[:, :, 3], 1, 0), 0, 1)
         deltaSSum += np.roll(np.roll(deltaS[:, :, 4], 1, 0), -1, 1)
         deltaSSum += np.roll(np.roll(deltaS[:, :, 5], 0, 0), -1, 1)
-
+        
+        oldQ_d = self.Q_d.copy()
         self.Q_d[1:-1, 1:-1] += deltaSSum
         self.Q_a[1:-1, 1:-1] += deltaSSum
-        # TODO! Legg inn endring i volum fraksjon Q_cbj
-        outflowNo = np.array([3, 4, 5, 0, 1, 2])  # Used to find "inflow" to cell from neighbors
-        term2 = np.zeros((self.Ny - 2, self.Nx - 2, self.Nj))
-        ndeltaS = np.zeros((self.Ny, self.Nx, 6))
-        ndeltaS[1:-1, 1:-1, :] = deltaS.copy()
-        for j in range(self.Nj):
-            for i in range(6):
-                term2[:, :, j] += self.Q_cbj[self.NEIGHBOR[i] + (j,)] * ndeltaS[self.NEIGHBOR[i] + (outflowNo[i],)]
-        nq_cbj = np.nan_to_num(1 / self.Q_d[1:-1, 1:-1, np.newaxis] *
-                (self.Q_d[1:-1, 1:-1, np.newaxis] * self.Q_cbj[1:-1, 1:-1,:] + term2))  # TODO usikker på om denne blir rett!
+        # Legg inn endring i volum fraksjon Q_cbj
+        prefactor = 1 / self.Q_d[1:-1, 1:-1, np.newaxis]
+        prefactor[np.isinf(prefactor)] = 0
+        nq_cbj = np.nan_to_num( prefactor*
+                (oldQ_d[1:-1, 1:-1, np.newaxis] * self.Q_cbj[1:-1, 1:-1,:] + deltaSSum[:,:,None]))  # TODO usikker på om denne blir rett!
         self.Q_cbj[1:-1,1:-1] = nq_cbj
+        self.Q_cbj[self.Q_cbj<1e-15] = 0
         if (self.Q_d < -1e-7).sum() > 0:
             print('height', self.Q_d[1, 6])
             raise RuntimeError('Negative sediment thickness!')
@@ -423,9 +457,9 @@ class Hexgrid():
             X = np.array(np.meshgrid(x, y))
             temp = np.zeros((self.Ny, self.Nx))
             if terrain is 'river':
-                temp = 2 * X[1, :] + 5 * np.abs(X[0, :] - 50 + 10 * np.sin(X[1, :] / 10))
+                temp = -2 * X[1, :] + 5 * np.abs(X[0, :] - 50 + 10 * np.sin(X[1, :] / 10))
                 #                 temp = 2*self.X[:,:,1] + 5*np.abs(self.X[:,:,0] + 10*np.sin(self.X[:,:,1]/10))
-                self.Q_a += temp[::-1, :]  # BRUK MED RIVER
+                self.Q_a += temp  # BRUK MED RIVER
             elif terrain is 'pit':
                 temp = np.sqrt((X[0, :] - 50) * (X[0, :] - 50) + (X[1, :] - 50) * (X[1, :] - 50))
                 self.Q_a += 10 * temp
@@ -454,7 +488,7 @@ class Hexgrid():
         self.diff[:, :, 5] = interiorH - old_height[1:self.Ny - 1, 0:self.Nx - 2] + self.seaBedDiff[:, :, 5]
 
     def calc_BFroudeNo(self, g_prime):  # out: Bulk Froude No matrix
-        U = self.Q_v  # TODO: Er dette riktig?
+        U = self.Q_v
         g: np.ndarray = g_prime.copy()
         # g_prime[g_prime == 0] = np.inf
         g[g == 0] = np.inf
@@ -473,4 +507,23 @@ class Hexgrid():
 
     def calc_dt(self):
         temp = self.calc_MaxRelaxationTime()
-        return np.min(temp[np.nonzero(temp)])
+        dt = 0.5 * np.amin(temp[np.isfinite(temp) & (~np.isnan(temp)) & (temp > 0)])
+        return dt
+
+    def printCA(self):
+        outflowNo = np.array(['NW', 'NE', 'E', 'SE', 'SW', 'W'])
+        try:
+            print("Time step = ", self.dt)
+        except:
+            print("No dt defined yet!")
+        print("self.Q_th =\n", self.Q_th)
+        print("self.Q_v  =\n", self.Q_v)
+
+        for i in range(1):
+            print("self.Q_cj =\n", self.Q_cj[:,:,i])
+        for i in range(1):
+            print("self.Q_cbj=\n", self.Q_cbj[:,:,i])
+        print("self.Q_d  =\n", self.Q_d)
+        print("self.Q_a  =\n", self.Q_a)
+        # for i in range(6):
+        #     print("self.Q_o[",outflowNo[i],"]=\n", self.Q_o[:,:,i])
